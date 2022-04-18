@@ -15,6 +15,12 @@
 #include <utility>
 #include <algorithm>
 #include <dirent.h>
+#include <sys/ioctl.h>
+
+bool forceOverWrite = false, directio = true, syncio = true, verbose = false, ignoreFile = false, quiet = false;
+
+constexpr size_t BUFFER_SIZE = 4096 * 4096 * 4;
+uint8_t *buffer;
 
 struct timer
 {
@@ -32,10 +38,17 @@ struct timer
 
 void printUsage()
 {
-    fprintf(stderr, "Usage: %s <source> [<source1>...] <destination>\n", "ucp");
-    fprintf(stderr, "Copy file from <source> to <destination>.\
-    \nLike using Windows to copy file to udisk.(Without writing cache of linux)\
-    2022-04-18 @Delta \n");
+    fprintf(stderr, "Usage: %s [options] <source> [<source1> ...] <destination>\n", "ucp");
+    fprintf(stderr, "Copy file from <sources> to <destination>\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "\t-h, --help\t\t\t\tPrint this help\n");
+    fprintf(stderr, "\t-q, --quiet\t\t\t\tPrint nothing\n");
+    fprintf(stderr, "\t-f, --force\t\t\t\tOverwrite exists files\n");
+    fprintf(stderr, "\t-i, --ignore\t\t\t\tIgnore(Skip) exists files\n");
+    fprintf(stderr, "\t-d, --directio\t\t\t\tDisable direct I/O(DMA). Default enable\n");
+    fprintf(stderr, "\t-s, --sync\t\t\t\tDisable sync data after copy(flush). Default enable \n");
+    fprintf(stderr, "\t-v, --verbose\t\t\t\tPrint more information\n");
+    fprintf(stderr, "For more information, please visit https://github.com/Delta-in-hub/ucp\n");
 }
 
 // 0 for file , 1 for directory, -1 for error
@@ -44,7 +57,6 @@ std::pair<char, size_t> isDirOrFile(const char *path)
     struct stat st;
     if (stat(path, &st) == -1)
     {
-        perror("stat");
         return {-1, -1};
     }
     if (S_ISDIR(st.st_mode))
@@ -93,11 +105,11 @@ size_t copyedFileNum = 1;
 size_t copyedFileSize = 0;
 
 timer *tm;
+size_t barLen = 5;
 void printProcessBar()
 {
     double percent = (copyedFileSize * 100.0) / totalFileSize;
     printf("\r[");
-    size_t barLen = 40;
     for (int i = 0; i < barLen; i++)
     {
         if (i < (copyedFileSize * barLen / totalFileSize))
@@ -155,7 +167,6 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
             totalFileSize += isDirOrFile(filePath.data()).second;
             if (f.rootPath.back() != '/')
                 f.rootPath.push_back('/');
-
             allFile.emplace_back(std::move(f));
         }
         else
@@ -168,7 +179,6 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
 
 void initAllFile(const std::vector<std::string> &initPath)
 {
-
     for (size_t j = 0; j < initPath.size(); j++)
     {
         if (j + 1 == initPath.size())
@@ -179,7 +189,7 @@ void initAllFile(const std::vector<std::string> &initPath)
         auto ret = isDirOrFile(i.c_str());
         if (ret.first == -1)
         {
-            perror("\nopen source file");
+            perror(i.data()); // source file not exist
             exit(EXIT_FAILURE);
         }
         else if (ret.first == 0)
@@ -197,29 +207,6 @@ void initAllFile(const std::vector<std::string> &initPath)
     totalFileNum = allFile.size();
 }
 
-constexpr size_t BUFFER_SIZE = 4096 * 4096 * 4;
-uint8_t *buffer;
-
-bool checkFileExists(std::string_view dest)
-{
-    struct stat st;
-    if (stat(dest.data(), &st) == -1)
-    {
-        return false;
-    }
-    return true;
-}
-
-bool same_file(int fd1, int fd2)
-{
-    struct stat stat1, stat2;
-    if (fstat(fd1, &stat1) < 0)
-        return -1;
-    if (fstat(fd2, &stat2) < 0)
-        return -1;
-    return (stat1.st_dev == stat2.st_dev) && (stat1.st_ino == stat2.st_ino);
-}
-
 int mkpath(char *file_path, mode_t mode)
 {
     for (char *p = strchr(file_path + 1, '/'); p; p = strchr(p + 1, '/'))
@@ -232,6 +219,13 @@ int mkpath(char *file_path, mode_t mode)
                 *p = '/';
                 return -1;
             }
+            if (verbose)
+                printf("%s already exists\n", file_path);
+        }
+        else
+        {
+            if (verbose)
+                printf("%s created\n", file_path);
         }
         *p = '/';
     }
@@ -240,27 +234,66 @@ int mkpath(char *file_path, mode_t mode)
 
 void copyFile(std::string_view source, std::string_view dest)
 {
+
+    struct stat srcst, destst;
+    if (stat(source.data(), &srcst) == -1)
+    {
+        perror(source.data());
+        exit(EXIT_FAILURE);
+    }
+
+    bool destExists = true;
+    if (stat(dest.data(), &destst) == -1)
+    {
+        destExists = false;
+    }
+
+    if (destExists)
+    {
+        if ((srcst.st_dev == destst.st_dev) && (srcst.st_ino == destst.st_ino)) // same file
+        {
+            if (verbose)
+                printf("%s and %s are the same file\n", source.data(), dest.data());
+            copyedFileNum++;
+            return;
+        }
+        if (forceOverWrite and !ignoreFile)
+        {
+            if (verbose)
+                fprintf(stdout, "overwrite %s\n", dest.data());
+        }
+        else if (!forceOverWrite and ignoreFile)
+        {
+            if (verbose)
+                fprintf(stdout, "skip %s\n", dest.data());
+            copyedFileNum++;
+            return;
+        }
+        else
+        {
+            fprintf(stdout, "\n%s is already exists.[overwrite it?][y|n] ", dest.data());
+            char str[256];
+            scanf("%256s", str);
+            if (str[0] == 'y' || str[0] == 'Y')
+            {
+                if (verbose)
+                    fprintf(stdout, "overwrite %s\n", dest.data());
+            }
+            else
+            {
+                if (verbose)
+                    fprintf(stdout, "skip %s\n", dest.data());
+                copyedFileNum++;
+                return;
+            }
+        }
+    }
+
     int srcFd = open(source.data(), O_RDONLY);
     if (srcFd == -1)
     {
         perror(source.data());
         exit(EXIT_FAILURE);
-    }
-    if (checkFileExists(dest))
-    {
-        fprintf(stderr, "\n%s is already exists.[overwrite it?][y|n] ", dest.data());
-        char str[256];
-        scanf("%256s", str);
-        if (str[0] == 'y' || str[0] == 'Y')
-        {
-            fprintf(stderr, "overwrite %s\n", dest.data());
-        }
-        else
-        {
-            fprintf(stderr, "skip %s\n", dest.data());
-            close(srcFd);
-            return;
-        }
     }
 
     if (mkpath(const_cast<char *>(dest.data()), 0777) == -1)
@@ -268,20 +301,18 @@ void copyFile(std::string_view source, std::string_view dest)
         perror("\nmkpath");
         exit(EXIT_FAILURE);
     }
-    int destFd = open(dest.data(), O_WRONLY | O_CREAT | O_TRUNC | O_SYNC | O_DIRECT, 0666);
+    int flag = O_WRONLY | O_CREAT | O_TRUNC;
+    if (directio)
+        flag |= O_DIRECT;
+    if (syncio)
+        flag |= O_SYNC;
+    int destFd = open(dest.data(), flag, 0666);
     if (destFd == -1)
     {
         perror(dest.data());
         exit(EXIT_FAILURE);
     }
-    if (same_file(srcFd, destFd))
-    {
-        // fprintf(stderr, "same file %s\n", dest.data());
-        close(srcFd);
-        close(destFd);
-        copyedFileNum++;
-        return;
-    }
+
     ssize_t readSize = 0;
     ssize_t writeSize = 0;
     bool closeDirectio = false;
@@ -299,10 +330,14 @@ void copyFile(std::string_view source, std::string_view dest)
         if (readSize % 4096 != 0 and closeDirectio == false)
         {
             closeDirectio = true;
-            if (fcntl(destFd, F_SETFL, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC) == -1)
+            if (directio)
             {
-                perror("\nfcntl");
-                exit(EXIT_FAILURE);
+                flag &= ~O_DIRECT;
+                if (fcntl(destFd, F_SETFL, flag) == -1)
+                {
+                    perror("\nfcntl");
+                    exit(EXIT_FAILURE);
+                }
             }
         }
         writeSize = write(destFd, buffer, readSize);
@@ -321,6 +356,11 @@ void copyFile(std::string_view source, std::string_view dest)
         copyedFileSize += readSize;
         printProcessBar();
     }
+    if (verbose)
+    {
+        printf("\n");
+        printf("%s copied to %s\n", source.data(), dest.data());
+    }
     close(srcFd);
     close(destFd);
     copyedFileNum++;
@@ -335,47 +375,97 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    std::vector<std::string> initPath;
-    for (int i = 1; i < argc; i++)
+    std::vector<std::string> inputPath;
+    int i = 1;
+    for (; i < argc; i++)
     {
-        initPath.emplace_back(argv[i]);
+        if (strcmp(argv[i], "-h") == 0 or strcmp(argv[i], "--help") == 0)
+        {
+            printUsage();
+            exit(EXIT_SUCCESS);
+        }
+        else if (strcmp(argv[i], "-q") == 0 or strcmp(argv[i], "--quiet") == 0)
+        {
+            quiet = true;
+            close(1);
+        }
+        else if (strcmp(argv[i], "-f") == 0 or strcmp(argv[i], "--force") == 0)
+        {
+            forceOverWrite = true;
+        }
+        else if (strcmp(argv[i], "-i") == 0 or strcmp(argv[i], "--ignore") == 0)
+        {
+            ignoreFile = true;
+        }
+        else if (strcmp(argv[i], "-d") == 0 or strcmp(argv[i], "--directio") == 0)
+        {
+            directio = false;
+        }
+        else if (strcmp(argv[i], "-s") == 0 or strcmp(argv[i], "--sync") == 0)
+        {
+            syncio = false;
+        }
+        else if (strcmp(argv[i], "-v") == 0 or strcmp(argv[i], "--verbose") == 0)
+        {
+            verbose = true;
+        }
+        else
+        {
+            break;
+        }
     }
 
-    initAllFile(initPath);
+    for (; i < argc; i++)
+    {
+        inputPath.push_back(argv[i]);
+    }
+
+    initAllFile(inputPath);
+
+    std::string &destPath = inputPath.back();
+    auto tmp = isDirOrFile(destPath.data());
     bool isDestDir;
-    if (initPath.back() == ".")
+    if (tmp.first == -1)
     {
-        initPath.back().push_back('/');
+        perror(destPath.data());
+        exit(EXIT_FAILURE);
     }
-    if (initPath.back().back() == '/')
-        isDestDir = true;
-    else
-        isDestDir = false;
-
-    if (allFile.size() > 1 and !isDestDir)
+    else if (tmp.first == 1)
     {
         isDestDir = true;
-        initPath.back().push_back('/');
+        if (destPath.back() != '/')
+            destPath.push_back('/');
+    }
+    else
+    {
+        isDestDir = false;
     }
 
     buffer = (uint8_t *)aligned_alloc(4096, BUFFER_SIZE);
     if (buffer == nullptr)
     {
-        fprintf(stderr, "\nbuffer is not aligned\n");
+        fprintf(stderr, "\naligned_alloc failed\n");
         exit(EXIT_FAILURE);
     }
 
+    if (!quiet)
+    {
+        struct winsize w;
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+        if (w.ws_col > 40)
+            barLen = w.ws_col - 35;
+    }
     tm = new timer();
 
     for (auto &&i : allFile)
     {
         if (isDestDir)
-            copyFile(i.rootPath + i.relativePath, initPath.back() + i.relativePath);
+            copyFile(i.rootPath + i.relativePath, inputPath.back() + i.relativePath);
         else
-            copyFile(i.rootPath + i.relativePath, initPath.back());
+            copyFile(i.rootPath + i.relativePath, inputPath.back());
     }
     free(buffer);
-    printf("\n%.2lf s, copyed %lu files, %.2lf MB to %s\n", tm->getTimeInSecond(), copyedFileNum - 1, copyedFileSize / 1000000.0, initPath.back().data());
+    printf("\n%.2lf s, copyed %lu files, %.2lf MB to %s\n", tm->getTimeInSecond(), copyedFileNum - 1, copyedFileSize / 1000000.0, inputPath.back().data());
     delete tm;
     return 0;
 }
