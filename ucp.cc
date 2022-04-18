@@ -201,7 +201,13 @@ void initAllFile(const std::vector<std::string> &initPath)
         else
         {
             // directory
-            traverseDirectory(i, i);
+            std::string rpath = i;
+            if (rpath.back() == '/')
+                rpath.pop_back();
+            auto pos = rpath.rfind('/');
+            if (pos != std::string::npos)
+                rpath = i.substr(0, pos + 1);
+            traverseDirectory(i, rpath);
         }
     }
     totalFileNum = allFile.size();
