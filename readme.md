@@ -1,6 +1,8 @@
 # ucp
 ucp offers a set of commands to copy files and directories from one place to another.
+
 ucp means ultra(or usb) copy.
+
 Becasue I initially wrote this program to copy files to udisks.
 In linux, writing cache makes cp fast but you must WAIT A LONG LONG TIME on enjecting the udisk because system will flush the data to udisk(command : sync).
 Unlike Windows, you just wait on copying process.
