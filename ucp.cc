@@ -219,8 +219,6 @@ int mkpath(char *file_path, mode_t mode)
                 *p = '/';
                 return -1;
             }
-            if (verbose)
-                printf("%s already exists\n", file_path);
         }
         else
         {
@@ -306,7 +304,8 @@ void copyFile(std::string_view source, std::string_view dest)
         flag |= O_DIRECT;
     if (syncio)
         flag |= O_SYNC;
-    int destFd = open(dest.data(), flag, 0666);
+
+    int destFd = open(dest.data(), flag, srcst.st_mode);
     if (destFd == -1)
     {
         perror(dest.data());
