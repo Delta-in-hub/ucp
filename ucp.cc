@@ -124,6 +124,13 @@ void printProcessBar()
 
 std::string getRelativePath(std::string_view path, std::string_view rootPath)
 {
+    if (path.size() < rootPath.size())
+    {
+        fprintf(stderr, "Error: rootPath is shorter than path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (rootPath.empty())
+        return std::string(path);
     if (rootPath.back() == '/')
     {
         return std::string(path.begin() + rootPath.size(), path.end());
@@ -176,14 +183,12 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
 
             file f = {.rootPath = std::string(rootPath), .relativePath = getRelativePath(filePath, rootPath)};
             totalFileSize += isDirOrFile(filePath.data()).second;
-            if (f.rootPath.back() != '/')
+            if (not f.rootPath.empty() and f.rootPath.back() != '/')
                 f.rootPath.push_back('/');
             allFile.emplace_back(std::move(f));
         }
         else
-        {
             fprintf(stderr, "\n%s is not a file or directory,thus won't be copyed.\n", dirent->d_name);
-        }
     }
     closedir(dir);
 }
@@ -212,12 +217,15 @@ void initAllFile(const std::vector<std::string> &initPath)
         else
         {
             // directory
+            //./folder folder/
             std::string rpath = i;
             if (rpath.back() == '/')
                 rpath.pop_back();
             auto pos = rpath.rfind('/');
             if (pos != std::string::npos)
                 rpath = i.substr(0, pos + 1);
+            else
+                rpath.clear();
             traverseDirectory(i, rpath);
         }
     }
