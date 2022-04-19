@@ -145,7 +145,18 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
     struct dirent *dirent;
     while ((dirent = readdir(dir)) != nullptr)
     {
-        if (dirent->d_type == DT_DIR)
+        int r = -1;
+        if (dirent->d_type == DT_UNKNOWN)
+        {
+            r = isDirOrFile(dirent->d_name).first;
+            if (r == 0)
+                fprintf(stderr, "Warning: %s is a file\n", dirent->d_name);
+            else if (r == 1)
+                fprintf(stderr, "Warning: %s is a directory\n", dirent->d_name);
+            else
+                fprintf(stderr, "Warning: %s is not a file or directory\n", dirent->d_name);
+        }
+        if (dirent->d_type == DT_DIR or r == 1)
         {
             if (strcmp(dirent->d_name, ".") == 0 || strcmp(dirent->d_name, "..") == 0)
                 continue;
@@ -156,7 +167,7 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
             filePath.push_back('/');
             traverseDirectory(filePath, rootPath);
         }
-        else if (dirent->d_type == DT_REG)
+        else if (dirent->d_type == DT_REG or r == 0)
         {
             std::string filePath = std::string(path);
             if (filePath.back() != '/')
@@ -457,8 +468,8 @@ int main(int argc, char *argv[])
     {
         struct winsize w;
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-        if (w.ws_col > 40)
-            barLen = w.ws_col - 35;
+        if (w.ws_col > 45)
+            barLen = w.ws_col - 45;
     }
     tm = new timer();
 
