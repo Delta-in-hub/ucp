@@ -156,11 +156,7 @@ void traverseDirectory(std::string_view path /*end with / */, std::string_view r
         if (dirent->d_type == DT_UNKNOWN)
         {
             r = isDirOrFile(dirent->d_name).first;
-            if (r == 0)
-                fprintf(stderr, "Warning: %s is a file\n", dirent->d_name);
-            else if (r == 1)
-                fprintf(stderr, "Warning: %s is a directory\n", dirent->d_name);
-            else
+            if (r == -1)
                 fprintf(stderr, "Warning: %s is not a file or directory\n", dirent->d_name);
         }
         if (dirent->d_type == DT_DIR or r == 1)
